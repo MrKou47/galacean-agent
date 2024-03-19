@@ -1,8 +1,6 @@
-from typing import Dict
 from langchain_core.runnables import RunnablePassthrough
 from dotenv import load_dotenv
 import os
-import chromadb
 
 load_dotenv()
 
@@ -10,30 +8,23 @@ from typing import List
 from langchain.document_loaders.generic import GenericLoader
 from langchain_community.document_loaders.parsers.language import LanguageParser
 from langchain_community.document_loaders.directory import DirectoryLoader
-from langchain_community.document_loaders.markdown import UnstructuredMarkdownLoader
-from langchain.document_loaders.base import BaseLoader
-from langchain_core.vectorstores import VectorStore
 from langchain_core.documents import Document
 from langchain_community.vectorstores.chroma import Chroma
-from langchain_openai import OpenAIEmbeddings
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain.text_splitter import TextSplitter, Language, RecursiveCharacterTextSplitter, MarkdownHeaderTextSplitter
+from langchain_core.callbacks import StreamingStdOutCallbackHandler
 
+from langchain.chains.combine_documents.stuff import StuffDocumentsChain
 from langchain.chains.conversational_retrieval.base import ConversationalRetrievalChain
-from langchain.chains.mapreduce import MapReduceChain
+
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain.chains.history_aware_retriever import create_history_aware_retriever
+from langchain.chains.retrieval import create_retrieval_chain
+
 from langchain.chains.llm import LLMChain
 from langchain.memory import ConversationBufferMemory
-from langchain.chains.sequential import SequentialChain
-from langchain_core.runnables import RunnableSequence
-from langchain.chains.combine_documents.reduce import ReduceDocumentsChain
-from langchain.chains.combine_documents.stuff import StuffDocumentsChain
 
-from langchain.chains.combine_documents.stuff import create_stuff_documents_chain
-
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, PromptTemplate
-from langchain import hub
-
-print("start")
+from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
 
 ts_loader = GenericLoader.from_filesystem( 
   "./dist/engine",
@@ -86,8 +77,6 @@ embedding = OpenAIEmbeddings()
 
 db = None
 
-print('start db')
-
 if os.path.exists("./dist/chroma"):
   db = Chroma(
     embedding_function=embedding,
@@ -101,11 +90,11 @@ else:
   )
 
 retriever = db.as_retriever(
-  search_type="mmr",  # Also test "similarity"
+  search_type="mmr",
   search_kwargs={"k": 8},
 )
 
-llm = ChatOpenAI(model_name="gpt-4", temperature=0.2)
+llm = ChatOpenAI(temperature=0)
 
 memory = ConversationBufferMemory(
   memory_key="chat_history",
@@ -114,8 +103,17 @@ memory = ConversationBufferMemory(
   return_messages=True
 )
 
+llm_stream = ChatOpenAI(
+  model_name="gpt-4",
+  temperature=0.2,
+  streaming=True,
+  callbacks=[
+    StreamingStdOutCallbackHandler()
+  ]
+)
+
 llm_chain = LLMChain(
-  llm=llm,
+  llm=llm_stream,
   prompt=ChatPromptTemplate.from_messages(
     [
       ("system", "You are an AI assistant named Galacean Agent, proficient in front-end development, OpenGL, and WebGL. You are currently serving as a Technical Support Engineer for a WebGL game engine called Galacean Engine. Your role is to assist users in resolving issues related to using the Galacean Engine."),
@@ -127,10 +125,7 @@ llm_chain = LLMChain(
 )
 
 template = (
-  "Combine the chat history and follow up question into "
-  "a standalone question, and then translate the standalone querstion into English. If the standalone is already English, then you can directly return it."
-  "If Chat History is empty or NOT_FOUND, then you can just handle the follow up question."
-  "Chat History: {chat_history}"
+  "and then translate the question into English. If the question is already English, then you can directly return it."
   "Follow up question: {question}"
 )
 prompt = PromptTemplate.from_template(template)
@@ -159,15 +154,6 @@ chain = ConversationalRetrievalChain(
   output_key="answer",
   memory=memory,
   response_if_no_docs_found="I'm sorry, I couldn't find any documents that match your query.",
-  get_chat_history=lambda arguments : "NOT_FOUND"
+  get_chat_history=lambda arguments : "NOT_FOUND",
 )
 
-result = chain.invoke("如何使用 Galacean Engine 中的物理系统?")
-
-source_documents: List[Document] = result['source_documents']
-
-"""
-print the metadata about the source documents
-"""
-for doc in source_documents:
-  print(doc.metadata)
