@@ -20,8 +20,8 @@ from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
 
 from langchain import hub
 
-from .static_loader import StaticLoader
-from .retriver import retriever_exists, get_retriever
+from static_loader import StaticLoader
+from retriver import retriever_exists, get_retriever
 
 static_loader = StaticLoader()
 
@@ -57,3 +57,29 @@ def format_question(x: str) -> str:
   return { "input": x }
 
 chain = RunnableSequence(first=RunnableLambda(format_question), last=retriever_chain)
+
+def msg_handler(message: str, histroy):
+  partial_message = ""
+  metadata = []
+  receiving_answer = False
+  try:
+    for chunk in chain.stream(input=message):
+      print('chunk is', chunk)
+      if "input" in chunk and chunk["input"]:
+        partial_message = ""
+      if "context" in chunk and chunk["context"]:
+        for item in chunk["context"]:
+          metadata.append(item.metadata)
+      if "answer" in chunk:
+        if chunk["answer"] == "" and receiving_answer:
+            # Stream has ended if we are receiving answers and an empty answer appears
+            source = ''
+            for item in metadata:
+              source = '- ' + item.get("source", "") + '\n\n'
+            yield partial_message + '\n\n' + source
+        elif chunk["answer"] != "":
+            receiving_answer = True
+            partial_message = partial_message + chunk["answer"]
+            yield partial_message
+  except StopIteration:
+    print("The stream has ended.")
